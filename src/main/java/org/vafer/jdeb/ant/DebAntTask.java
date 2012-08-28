@@ -26,11 +26,18 @@ import org.apache.tools.ant.BuildException;
 import org.apache.tools.ant.taskdefs.MatchingTask;
 import org.apache.tools.ant.taskdefs.Tar;
 import org.apache.tools.ant.types.FileSet;
+import org.bouncycastle.openpgp.PGPSecretKey;
+import org.bouncycastle.openpgp.PGPSignature;
+import org.bouncycastle.openpgp.PGPSignatureGenerator;
+import org.bouncycastle.openpgp.PGPUtil;
+import org.bouncycastle.openpgp.operator.bc.BcPGPContentSignerBuilder;
 import org.vafer.jdeb.DataProducer;
+import org.vafer.jdeb.PackagingException;
 import org.vafer.jdeb.Processor;
 import org.vafer.jdeb.changes.TextfileChangesProvider;
 import org.vafer.jdeb.descriptors.PackageDescriptor;
 import org.vafer.jdeb.producers.DataProducerFileSet;
+import org.vafer.jdeb.signing.SigningUtils;
 
 /**
  * TODO generalize with DebMaker
@@ -91,6 +98,11 @@ public class DebAntTask extends MatchingTask {
      * Trigger the verbose mode detailing all operations
      */
     private boolean verbose;
+    
+    /**
+     * Whether to generate a signature when creating the package.
+     */
+    private boolean signPackage;
 
     private Collection<DataProducer> dataProducers = new ArrayList<DataProducer>();
 
@@ -135,6 +147,10 @@ public class DebAntTask extends MatchingTask {
         this.verbose = verbose;
     }
 
+    public void setSignPackage( boolean signPackage ) {
+        this.signPackage = signPackage;
+    }
+    
     public void addFileSet( FileSet fileset ) {
         dataProducers.add(new DataProducerFileSet(fileset));
     }
@@ -221,8 +237,39 @@ public class DebAntTask extends MatchingTask {
         try {
 
             log("Creating debian package: " + deb);
-
-            packageDescriptor = processor.createDeb(controlFiles, data, deb, compression);
+            if (signPackage) {
+                if (keyring == null || !keyring.exists()) {
+                    throw new PackagingException(
+                            "Signing requested, but no keyring supplied");
+                }
+                
+                if (key == null) {
+                    throw new PackagingException(
+                            "Signing requested, but no key supplied");
+                }
+                
+                if (passphrase == null) {
+                    throw new PackagingException(
+                            "Signing requested, but no passphrase supplied");
+                }
+                
+                FileInputStream keyRingInput = new FileInputStream(keyring);
+                PGPSecretKey secretKey = null;
+                try {
+                    secretKey = SigningUtils.getSecretKey(keyRingInput, key);
+                } finally {
+                    keyRingInput.close();
+                }
+                
+                int digest = PGPUtil.SHA1;
+                
+                PGPSignatureGenerator signatureGenerator = new PGPSignatureGenerator(new BcPGPContentSignerBuilder(secretKey.getPublicKey().getAlgorithm(), digest));
+                signatureGenerator.init(PGPSignature.BINARY_DOCUMENT, SigningUtils.getPrivateKey(secretKey, passphrase));
+                
+                packageDescriptor = processor.createSignedDeb(controlFiles, data, deb, compression, signatureGenerator);
+            } else {
+                packageDescriptor = processor.createDeb(controlFiles, data, deb, compression);
+            }
 
         } catch (Exception e) {
             // what the fuck ant? why are you not printing the exception chain?
